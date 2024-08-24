@@ -1,4 +1,4 @@
-package pkg
+package dotenv
 
 import (
 	"bufio"
@@ -7,12 +7,22 @@ import (
 	"io"
 	"log"
 	"os"
+	"path"
 	"regexp"
 	"strings"
 )
 
 var (
-	keyRegex           = regexp.MustCompile(`[a-zA-Z_]+[a-zA-Z0-9_]*`)
+	inValidFileExtension  = errors.New("invalid file extension")
+	inValidLine           = errors.New("invalid line")
+	inValidKey            = errors.New("invalid key")
+	unterminatedMultiLine = errors.New("unterminated multiline value")
+	unterminatedQuote     = errors.New("unterminated quoted value")
+	unexpectedCharacters  = errors.New("unexpected characters after value")
+)
+
+var (
+	keyRegex           = regexp.MustCompile(`^[a-zA-Z_]+[a-zA-Z0-9_]*`)
 	substituteVarRegex = regexp.MustCompile(`(\\)?(\$)(\()?\{?([A-Z0-9_]+)?\}?`)
 	escapeRegex        = regexp.MustCompile(`\\.`)
 	unescapeRegex      = regexp.MustCompile(`\\([^$])`)
@@ -23,6 +33,10 @@ func Read(filenames ...string) (map[string]string, error) {
 	envVars := make(map[string]string)
 
 	for _, filename := range filenames {
+		if path.Ext(filename) != ".env" {
+			return nil, fmt.Errorf("%w for file %s", inValidFileExtension, filename)
+		}
+
 		envFile, err := os.Open(filename)
 		if err != nil {
 			return nil, err
@@ -59,16 +73,16 @@ func Parse(envFile io.Reader) (map[string]string, error) {
 		keyVal := strings.SplitN(line, "=", 2)
 
 		if len(keyVal) != 2 {
-			return nil, errors.New("invalid line")
+			return nil, inValidLine
 		}
 
 		key := strings.TrimSpace(keyVal[0])
-		if matched := keyRegex.Match([]byte(line)); !matched {
-			return nil, fmt.Errorf("invalid key %s", key)
+		if matched := keyRegex.MatchString(key); !matched {
+			return nil, fmt.Errorf("%w for %s", inValidKey, key)
 		}
 		val, err := extractValue(keyVal[1], scanner, envVars)
 		if err != nil {
-			return nil, fmt.Errorf("error parsing value for key %s %w", key, err)
+			return nil, fmt.Errorf("failed to parse value for key %s %w", key, err)
 		}
 
 		envVars[key] = val
@@ -124,7 +138,7 @@ func extractValue(val string, scanner *bufio.Scanner, currentEnvVars map[string]
 			multilineVal.WriteString(parseEscape(line) + "\n")
 		}
 
-		return "", errors.New("unterminated multiline value")
+		return "", unterminatedMultiLine
 	} else {
 		var prefix byte
 
@@ -141,7 +155,7 @@ func extractValue(val string, scanner *bufio.Scanner, currentEnvVars map[string]
 			}
 
 			if strings.HasPrefix(val, string(prefix)) {
-				return "", errors.New("unterminated quoted value")
+				return "", unterminatedQuote
 			}
 		}
 
@@ -151,7 +165,7 @@ func extractValue(val string, scanner *bufio.Scanner, currentEnvVars map[string]
 	}
 
 	if strings.TrimSpace(remaining) != "" && !strings.HasPrefix(remaining, "#") {
-		return "", errors.New("unexpected characters after value")
+		return "", unexpectedCharacters
 	}
 
 	return val, nil
@@ -185,7 +199,7 @@ func parseEscape(str string) string {
 func substituteVariables(line string, envVars map[string]string) string {
 	return substituteVarRegex.ReplaceAllStringFunc(line, func(match string) string {
 		if _, ok := envVars[match[2:len(match)-1]]; !ok {
-			return match
+			return ""
 		}
 		return envVars[match[2:len(match)-1]]
 	})
